@@ -1,0 +1,826 @@
+--Luitpold SPARC dashboard update
+
+--Run from top to bottom 
+--Final Tables created by 
+--Command 8--dn_luitpold_remit_2_ST4_053017_final_reformat
+--Command 14--DN_Luitpold_threefortyB
+
+--COMMAND 1
+create or replace table dn_luitpold_remit as
+select
+cl.claim_payment_number,
+cl.payer_claim_control_number,
+cl.claim_status,
+substr(sv.service_from_date,1,4) as year_date,
+substr(sv.service_from_date,6,2) as month_date,
+cl.payer_id,
+cl.payer_name,
+cl.billing_pr_npi,
+cl.billing_pr_name,
+cl.billing_pr_adr_line1,
+cl.billing_pr_adr_city,
+cl.billing_pr_adr_state,
+rendering_pr_npi
+,rendering_pr_last_or_org_name
+,cl.total_paid_amt,
+sv.line_number,
+sv.service_from_date,
+sv.line_charge_amount,
+sv.line_paid_amount,
+sv.adjudicated_procedure_cd,
+sv.group_code_1,
+sv.reason_code_1,
+sv.adjustment_amount_1,
+sv.adjustment_quantity_1,
+sv.group_code_2,
+sv.reason_code_2,
+sv.adjustment_amount_2,
+sv.adjustment_quantity_2,
+sv.group_code_3,
+sv.reason_code_3,
+sv.adjustment_amount_3,
+sv.adjustment_quantity_3,
+sv.group_code_4,
+sv.reason_code_4,
+sv.adjustment_amount_4,
+sv.adjustment_quantity_4,
+sv.group_code_5,
+sv.reason_code_5,
+sv.adjustment_amount_5,
+sv.adjustment_quantity_5,
+claim_received_by_payer_date
+,sv.date_paid
+,type_of_coverage
+,patient_amount_paid
+,patient_responsibility_amount
+,type_of_bill
+from RWD.condor_claim_payment_record cl --DANNY CHANGE THESE
+inner join RWD.condor_service_payment_record sv --DANNY CHANGE THESE
+on cl.claim_payment_number = sv.claim_payment_number
+where sv.adjudicated_procedure_cd in ('J1439','J1756','Q0138','Q0139','J2916','J1750');
+
+
+--COMMAND 2
+--getting distinct claim payments
+create or replace table dn_luitpold_remit_ST1 as
+select distinct 
+payer_claim_control_number,
+claim_status,
+year_date,
+month_date,
+payer_id,
+payer_name,
+billing_pr_npi,
+billing_pr_name,
+billing_pr_adr_line1,
+billing_pr_adr_city,
+billing_pr_adr_state,
+rendering_pr_npi
+,rendering_pr_last_or_org_name
+,total_paid_amt,
+line_number,
+service_from_date,
+line_charge_amount,
+line_paid_amount,
+adjudicated_procedure_cd,
+group_code_1,
+reason_code_1,
+adjustment_amount_1,
+adjustment_quantity_1,
+group_code_2,
+reason_code_2,
+adjustment_amount_2,
+adjustment_quantity_2,
+group_code_3,
+reason_code_3,
+adjustment_amount_3,
+adjustment_quantity_3,
+group_code_4,
+reason_code_4,
+adjustment_amount_4,
+adjustment_quantity_4,
+group_code_5,
+reason_code_5,
+adjustment_amount_5,
+adjustment_quantity_5,
+claim_received_by_payer_date
+,date_paid
+,type_of_coverage
+,patient_amount_paid
+,patient_responsibility_amount
+,type_of_bill
+from dn_luitpold_remit;
+
+--COMMAND 3
+
+--first step is to pull out just the summary of out of pocket amounts at the service line level
+create or replace table dn_luitpold_remit_2_ST2 as 
+select
+--things that shouldn't change
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd
+--things that we'll summarize later
+,cast(claim_status as VARCHAR(10)) as claim_status
+,cast(line_paid_amount as float) as line_paid_amount
+,cast(line_charge_amount as float) as line_charge_amount
+,date_paid
+,claim_received_by_payer_date
+,cast(patient_responsibility_amount as float) as patient_responsibility_amount
+,cast(patient_amount_paid as float) as patient_amount_paid
+,cast(total_paid_amt as float) as total_paid_amt
+--NEW OOP numbers
+,case
+  when group_code_1 in ('CO','PR') and reason_code_1 in ('1','2','3','142','178','201','247','248','241')
+  then cast(adjustment_amount_1 as float)
+  
+  else NULL
+end as OOP1
+,case
+  when group_code_2 in ('CO','PR') and reason_code_2 in ('1','2','3','142','178','201','247','248','241')
+  then cast(adjustment_amount_2 as float)
+  
+  else NULL
+end as OOP2
+,case
+  when group_code_3 in ('CO','PR') and reason_code_3 in ('1','2','3','142','178','201','247','248','241')
+  then cast(adjustment_amount_3 as float)
+  
+  else NULL
+end as OOP3
+,case
+  when group_code_4 in ('CO','PR') and reason_code_4 in ('1','2','3','142','178','201','247','248','241')
+  then cast(adjustment_amount_4 as float)
+  
+  else NULL
+end as OOP4
+,case
+  when group_code_5 in ('CO','PR') and reason_code_5 in ('1','2','3','142','178','201','247','248','241')
+  then cast(adjustment_amount_5 as float)
+  
+  else NULL
+end as OOP5
+from dn_luitpold_remit_ST1;
+
+--checking the claim status'
+select distinct(claim_status), count(*) from dn_luitpold_remit_2_ST2 group by claim_status;
+
+--COMMAND 4
+--reboot to create service line OOP calculations
+create or replace table dn_luitpold_remit_2_ST3 as 
+select
+--things that shouldn't change
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd
+--things that might change
+/*claim_status
+line_paid_amount
+line_charge_amount
+date_paid
+claim_received_by_payer_date
+patient_responsibility_amount
+patient_amount_paid
+total_paid_amt*/
+
+--case statement to find latest date for a reversal (negative payment)
+,max(case
+  when claim_status = 22 and line_paid_amount < 0 
+  then date_paid
+  else NULL
+end) as Max_Reversal_Date
+
+--case statement to find latest date for a payment (positive payment)
+,max(case
+  when claim_status not in (4,22) and line_paid_amount >= 0 
+  then date_paid
+  else NULL
+end) as Max_Not_Reversal_or_Denial_Date
+
+--case statement to find latest date for a denial (0 or negative-- should be mostly zero)
+,max(case
+  when claim_status = 4 and line_paid_amount <= 0 
+  then date_paid
+  else NULL
+end) as Max_Non_Reversal_Date
+
+
+--REBOOT OF PATIENT RESPONSIBILITY BASED ON SERVICE LEVEL
+--NEW OOP -- processed as primary
+
+,max(case
+  when claim_status = 1 
+     and coalesce(OOP1,0)+coalesce(OOP2,0)+coalesce(OOP3,0)+coalesce(OOP4,0)+coalesce(OOP5,0) >= 0 
+     and (OOP1 IS NOT NULL OR OOP2 IS NOT NULL OR OOP3 IS NOT NULL OR OOP4 IS NOT NULL OR OOP5 IS NOT NULL)
+  then coalesce(OOP1,0)+coalesce(OOP2,0)+coalesce(OOP3,0)+coalesce(OOP4,0)+coalesce(OOP5,0)
+  else NULL
+end) as Max_SVC_Pat_Responsibility_Primary
+--NEW OOP -- processed as anything but denied/reversed/primary
+,max(case
+  when claim_status not in (1,4,22) 
+     and coalesce(OOP1,0)+coalesce(OOP2,0)+coalesce(OOP3,0)+coalesce(OOP4,0)+coalesce(OOP5,0) >= 0
+     and (OOP1 IS NOT NULL OR OOP2 IS NOT NULL OR OOP3 IS NOT NULL OR OOP4 IS NOT NULL OR OOP5 IS NOT NULL)
+  then coalesce(OOP1,0)+coalesce(OOP2,0)+coalesce(OOP3,0)+coalesce(OOP4,0)+coalesce(OOP5,0)
+  else NULL
+end) as Max_SVC_Pat_Responsibility_non_Primary
+
+--OLD OOP
+,max(case
+  when claim_status = 1 and patient_amount_paid >= 0
+  then patient_amount_paid
+  else NULL
+end) as Max_Pat_Responsibility_1_Primary
+--patient_responsiblity 1 -- processed as anything but denied/reversed/primary
+,max(case
+  when claim_status not in (1,4,22) and patient_amount_paid >= 0
+  then patient_amount_paid
+  else NULL
+end) as Max_Pat_Responsibility_1_non_Primary
+ --you can add these together? 
+--patient_responsiblity 2 -- processed as primary
+,max(case
+  when claim_status = 1 and patient_responsibility_amount >= 0
+  then patient_responsibility_amount
+  else NULL
+end) as Max_Pat_Responsibility_2_primary
+--patient_responsiblity 2 -- processed as anything but denied/reversed/primary
+,max(case
+  when claim_status not in (1,4,22) and patient_responsibility_amount >= 0
+  then patient_responsibility_amount
+  else NULL
+end) as Max_Pat_Responsibility_2_non_primary
+
+--line amount charged -- processed as primary
+,max(case
+  when claim_status = 1 and line_charge_amount >= 0
+  then line_charge_amount
+  else NULL
+end) as max_line_charge_amount_primary
+--line amount charged -- processed as anything but denied/reversed/primary
+,max(case
+  when claim_status not in (1,4,22) and line_charge_amount >= 0
+  then line_charge_amount
+  else NULL
+end) as max_line_charge_amount_non_primary
+--line amount paid -- processed as primary
+,max(case
+  when claim_status = 1 and line_paid_amount >= 0
+  then line_paid_amount
+  else NULL
+end) as max_line_paid_amount_primary
+--line amount paid -- processed as anything but denied/reversed/primary
+,max(case
+  when claim_status not in (1,4,22) and line_paid_amount >= 0
+  then line_paid_amount
+  else NULL
+end) as max_line_paid_amount_non_primary
+--max total claim payment
+,max(total_paid_amt) as max_total_claim_payment
+
+
+from (select * from dn_luitpold_remit_2_ST2 where claim_status in ('1','13','21','22','4','16','20','3','17','2','23','19'))
+
+group by 
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd;
+
+describe table dn_luitpold_remit_2_ST2;
+
+select *
+from dn_luitpold_remit_2_ST3;
+
+--COMMAND 5
+--joining when there is a match for billing_pr_npi on either a facility npi or provider npi, joining for rendering when there is a match on rendering_pr_npi, or match for payer_id to payer mapping table
+--need to join to grab billing provider info, rendering provider info, and payer info
+--added in a row for count of claims set to 1
+----******** there is a version of this called am_injectafer_remit_2_ST4 that is essentially the same it just doesn't have a counter value of 1*****
+create or replace table dn_luitpold_remit_2_ST4_counter as
+select ori.*
+,pyt.payer_nm
+,pyt.payer_type
+,org.org_business_name
+,org.last_name as billing_lname
+,org.first_name as billing_fname
+,org.business_practice_location_address_city_name
+,org.business_practice_location_address_state_name
+,org.business_practice_location_address_postal_code
+,prov1.Provider_First_Name as first_name
+,prov1.Provider_Last_Name_Legal_Name as last_name
+,prov1.Provider_Business_Practice_Location_Address_City_Name as adr_city
+,prov1.Provider_Business_Practice_Location_Address_State_Name as adr_state
+,prov1.healthcare_provider_taxonomy_code_1 as primary_specialty
+,prov2.Provider_First_Name as rendering_fname
+,prov2.Provider_Last_Name_Legal_Name as rendering_lname
+,prov2.Provider_Business_Practice_Location_Address_City_Name as rendering_city
+,prov2.Provider_Business_Practice_Location_Address_State_Name as rendering_state
+,prov2.healthcare_provider_taxonomy_code_1 as rendering_specialty
+,1 as number_of_claims
+from dn_luitpold_remit_2_ST3 ori
+--join to billing provider
+left join RWD.ref_facility_npis org
+on ori.billing_pr_npi = org.npi
+left join srn_cmsnpi_latest prov1
+on ori.billing_pr_npi = prov1.npi
+--join to rendering provider
+left join srn_cmsnpi_latest prov2
+on ori.rendering_pr_npi = prov2.npi
+--join to payer info
+left join RWD.payer_id_map pyt
+on ori.payer_id = pyt.payer_id;
+
+describe table sandbox.srn_cmsnpi_latest;
+
+--not convinced this step is needed
+--COMMAND 6
+create or replace table dn_luitpold_remit_2_ST4_counter_final as
+select ori.*
+,tax.Code
+,tax.Classification
+,tax.Specialization
+,tax.Specialty
+from dn_luitpold_remit_2_ST4_counter ori
+left join RWD.CMS_PROVIDER_SPECIALTY_CODES tax
+on ori.rendering_specialty = tax.Code;
+
+select * from RWD.CMS_PROVIDER_SPECIALTY_CODES;
+
+
+--COMMAND 7
+create or replace table dn_luitpold_remit_2_ST4_final_fordash as
+select * 
+,first_name as Provider_First_Name
+,last_name as Provider_Last_Name
+,adr_city as Provider_Busines_Practice_Location_Address_City_Name
+,adr_state as Provider_Business_Practice_Location_Address_State_Name
+from dn_luitpold_remit_2_ST4_counter_final;
+
+--this shows that most service_from_dates are not null
+select * from dn_luitpold_remit_2_ST4_final_fordash
+where service_from_date is not null
+order by service_from_date desc;
+
+select distinct(service_from_date)
+from dn_luitpold_remit_2_ST4_final_fordash
+order by service_from_date desc;
+
+--COMMAND 8
+create or replace table dn_luitpold_remit_2_ST4_final_reformat as
+select 
+PAYER_CLAIM_CONTROL_NUMBER,
+SERVICE_FROM_DATE,
+YEAR_DATE,
+MONTH_DATE,
+PAYER_ID,
+TYPE_OF_COVERAGE,
+TYPE_OF_BILL,
+BILLING_PR_NPI,
+RENDERING_PR_NPI,
+ADJUDICATED_PROCEDURE_CD,
+MAX_REVERSAL_DATE,
+
+MAX_NOT_REVERSAL_OR_DENIAL_DATE,
+
+ MAX_NON_REVERSAL_DATE,
+
+cast(MAX_SVC_PAT_RESPONSIBILITY_PRIMARY as float) as MAX_SVC_PAT_RESPONSIBILITY_PRIMARY,
+cast(MAX_SVC_PAT_RESPONSIBILITY_NON_PRIMARY as float) as MAX_SVC_PAT_RESPONSIBILITY_NON_PRIMARY,
+cast(Max_Pat_Responsibility_1_Primary as float) as Max_Pat_Responsibility_1_Primary,
+cast(Max_Pat_Responsibility_1_non_Primary as float) as Max_Pat_Responsibility_1_non_Primary,
+cast(Max_Pat_Responsibility_2_primary as float) as Max_Pat_Responsibility_2_Primary,
+cast(Max_Pat_Responsibility_2_non_primary as float) as Max_Pat_Responsibility_2_non_Primary,
+cast(MAX_LINE_CHARGE_AMOUNT_PRIMARY as float) as MAX_LINE_CHARGE_AMOUNT_PRIMARY,
+cast(MAX_LINE_CHARGE_AMOUNT_NON_PRIMARY as float) as MAX_LINE_CHARGE_AMOUNT_NON_PRIMARY,
+cast(MAX_LINE_PAID_AMOUNT_PRIMARY as float) as MAX_LINE_PAID_AMOUNT_PRIMARY,
+cast(MAX_LINE_PAID_AMOUNT_NON_PRIMARY as float) as MAX_LINE_PAID_AMOUNT_NON_PRIMARY,
+cast(MAX_TOTAL_CLAIM_PAYMENT as float) as MAX_TOTAL_CLAIM_PAYMENT,
+
+PAYER_NM,
+PAYER_TYPE,
+ORG_BUSINESS_NAME,
+BILLING_LNAME,
+BILLING_FNAME,
+BUSINESS_PRACTICE_LOCATION_ADDRESS_CITY_NAME,
+BUSINESS_PRACTICE_LOCATION_ADDRESS_STATE_NAME,
+BUSINESS_PRACTICE_LOCATION_ADDRESS_POSTAL_CODE,
+FIRST_NAME,
+LAST_NAME,
+ADR_CITY,
+ADR_STATE,
+PRIMARY_SPECIALTY,
+RENDERING_FNAME,
+RENDERING_LNAME,
+RENDERING_CITY,
+RENDERING_STATE,
+RENDERING_SPECIALTY,
+NUMBER_OF_CLAIMS,
+CODE,
+CLASSIFICATION,
+SPECIALIZATION,
+SPECIALTY,
+PROVIDER_FIRST_NAME,
+PROVIDER_LAST_NAME,
+PROVIDER_BUSINES_PRACTICE_LOCATION_ADDRESS_CITY_NAME,
+PROVIDER_BUSINESS_PRACTICE_LOCATION_ADDRESS_STATE_NAME
+
+from dn_luitpold_remit_2_ST4_final_fordash
+where service_from_date IS NOT NULL;
+        
+  
+
+--COMMAND 8B  
+--don't actually need this step next time
+create or replace table DN_Luitpold_both as 
+select *,
+case when adjudicated_procedure_cd = 'J1439' then 'Injectafer'
+when adjudicated_procedure_cd = 'J1750' then 'INFed_and_Generics'
+when adjudicated_procedure_cd = 'J1756' then 'Venofer'
+when adjudicated_procedure_cd = 'J2916' then 'Ferrlecit'
+when adjudicated_procedure_cd = 'Q0138' then 'Feraheme(Q0138)'
+when adjudicated_procedure_cd = 'Q0139' then 'Feraheme(Q0139)'
+end as modified_adjudicated_procedure_cd
+
+from dn_luitpold_remit_2_ST4_final_reformat
+where service_from_date > '2015-12-31' and service_from_date < '2018-01-01' and service_from_date is not null;
+
+select RENDERING_CITY, rENDERING_STATE from DN_Luitpold_both WHERE RENDERING_CITY IS NOT NULL limit 100;
+
+--JOINING IN THE REGION INFORMATION
+CREATE OR REPLACE TABLE DN_DSI_BOTH2 AS
+
+SELECT BOTH.*, TERR.REGION
+
+FROM (select distinct * from DN_Luitpold_both) BOTH
+
+LEFT JOIN (select distinct * from SANDBOX.DSI_TERRITORY1) TERR
+
+ON BOTH.RENDERING_CITY = TERR.CITY
+
+AND BOTH.RENDERING_STATE = TERR.STATE;
+
+--limiting to distinct 
+create or replace table dn_dsi_both3 as
+
+select distinct *
+from DN_DSI_BOTH2;
+
+SELECT * FROM DSI_TERRITORY LIMIT 100;
+SELECT COUNT(*) FROM DN_LUITPOLD_BOTH; 
+SELECT count(*) FROM DN_DSI_BOTH3; WHERE RENDERING_CITY = 'MEMPHIS' AND RENDERING_STATE = 'TN' AND MODIFIED_ADJUDICATED_PROCEDURE_CD = 'J1439';
+select * from dn_dsi_both2 limit 100;
+------------------------------------------------------------------------------
+          
+          select concat(year_date, month_date) as month_and_year, count(*) 
+          from dn_luitpold_both 
+          group by concat(year_date, month_date)
+          order by concat(year_date, month_date) desc;
+
+select service_from_date from (select * from DN_Luitpold_both where service_from_date < '2017-08-01')
+order by service_from_date desc;
+    
+--checking at the top from service payment and claim payment records
+select service_from_date, count(*) 
+from (select * from dn_luitpold_remit where service_from_date > '2015-12-31' and service_from_date < '2018-01-01' and service_from_date is not null)   
+group by service_from_date
+order by service_from_date desc;
+------------------------------------------------------------------------------          
+          
+--PORTION BELOW FOR 340B SECTION ONLY
+
+--COMMAND 9
+--have to cast adjustment amounts as float
+--FROM TABLE HERE IS CREATED IN STEP 1
+create or replace table dn_luitpold_remit_cast as
+select 
+CLAIM_PAYMENT_NUMBER,
+PAYER_CLAIM_CONTROL_NUMBER,
+CLAIM_STATUS,
+YEAR_DATE,
+MONTH_DATE,
+PAYER_ID,
+PAYER_NAME,
+BILLING_PR_NPI,
+BILLING_PR_NAME,
+BILLING_PR_ADR_LINE1,
+BILLING_PR_ADR_CITY,
+BILLING_PR_ADR_STATE,
+RENDERING_PR_NPI,
+RENDERING_PR_LAST_OR_ORG_NAME,
+cast(TOTAL_PAID_AMT as float) as TOTAL_PAID_AMT,
+LINE_NUMBER,
+SERVICE_FROM_DATE,
+cast(LINE_CHARGE_AMOUNT as float) as LINE_CHARGE_AMOUNT,
+cast(LINE_PAID_AMOUNT as float) as LINE_PAID_AMOUNT,
+ADJUDICATED_PROCEDURE_CD,
+GROUP_CODE_1,
+REASON_CODE_1,
+cast(ADJUSTMENT_AMOUNT_1 as float) as ADJUSTMENT_AMOUNT_1,
+ADJUSTMENT_QUANTITY_1,
+GROUP_CODE_2,
+REASON_CODE_2,
+cast(ADJUSTMENT_AMOUNT_2 as float) as ADJUSTMENT_AMOUNT_2,
+ADJUSTMENT_QUANTITY_2,
+GROUP_CODE_3,
+REASON_CODE_3,
+cast(ADJUSTMENT_AMOUNT_3 as float) as ADJUSTMENT_AMOUNT_3,
+ADJUSTMENT_QUANTITY_3,
+GROUP_CODE_4,
+REASON_CODE_4,
+cast(ADJUSTMENT_AMOUNT_4 as float) as ADJUSTMENT_AMOUNT_4,
+ADJUSTMENT_QUANTITY_4,
+GROUP_CODE_5,
+REASON_CODE_5,
+cast(ADJUSTMENT_AMOUNT_5 as float) as ADJUSTMENT_AMOUNT_5,
+ADJUSTMENT_QUANTITY_5,
+CLAIM_RECEIVED_BY_PAYER_DATE,
+DATE_PAID,
+TYPE_OF_COVERAGE,
+cast(PATIENT_AMOUNT_PAID as float) as PATIENT_AMOUNT_PAID,
+cast(PATIENT_RESPONSIBILITY_AMOUNT as float) as PATIENT_RESPONSIBILITY_AMOUNT,
+TYPE_OF_BILL
+from (select * from dn_luitpold_remit where claim_status in ('1','13','21','22','4','16','20','3','17','2','23','19'));
+
+select * from dn_luitpold_remit_cast limit 100;
+
+--COMMAND 10
+create or replace table dn_updated_luitpold_OOP as 
+select
+--things that shouldn't change
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd
+--things that we'll summarize later
+,claim_status
+,line_paid_amount
+,line_charge_amount
+,date_paid
+,claim_received_by_payer_date
+,patient_responsibility_amount
+,patient_amount_paid
+,total_paid_amt
+--NEW OOP numbers
+,sum(distinct case
+when reason_code_1 = '1' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '1' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '1' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '1' and adjustment_amount_4 > 0
+then adjustment_amount_4 
+when reason_code_5 = '1' and adjustment_amount_5 > 0
+then adjustment_amount_5
+else NULL
+end) as Deductible_Amount
+,count(distinct case 
+when reason_code_1 = '1' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '1' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '1' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '1' and adjustment_amount_4 > 0
+then adjustment_amount_4
+when reason_code_5 = '1' and adjustment_amount_5 > 0
+then adjustment_amount_5
+else NULL
+end) as Count_Deductible_Adjustment
+,sum(distinct case
+when reason_code_1 = '2' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '2' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '2' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '2' and adjustment_amount_4 > 0
+then adjustment_amount_4
+when reason_code_5 = '2' and adjustment_amount_5 > 0
+then adjustment_amount_5
+else NULL
+end) as Coinsurance_Amount
+,count(distinct case 
+when reason_code_1 = '2' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '2' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '2' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '2' and adjustment_amount_4 > 0
+then adjustment_amount_4
+when reason_code_5 = '2' and adjustment_amount_5 > 0
+then adjustment_amount_5
+else Null
+end) as Count_Coinsurance_Adjustment
+,sum(distinct case
+when reason_code_1 = '3' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '3' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '3' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '3' and adjustment_amount_4 > 0
+then adjustment_amount_4
+when reason_code_5 = '3' and adjustment_amount_5 > 0
+then adjustment_amount_5
+else NULL
+end) as Copayment_Amount
+,count(distinct case 
+when reason_code_1 = '3' and adjustment_amount_1 > 0
+then adjustment_amount_1
+when reason_code_2 = '3' and adjustment_amount_2 > 0
+then adjustment_amount_2
+when reason_code_3 = '3' and adjustment_amount_3 > 0
+then adjustment_amount_3
+when reason_code_4 = '3' and adjustment_amount_4 > 0
+then adjustment_amount_4
+when reason_code_5 = '3' and adjustment_amount_5 > 0
+then adjustment_amount_5 
+else Null
+end) as Count_Copayment_Adjustment
+from dn_luitpold_remit_cast
+group by 
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd
+--things that we'll summarize later
+,claim_status
+,line_paid_amount
+,line_charge_amount
+,date_paid
+,claim_received_by_payer_date
+,patient_responsibility_amount
+,patient_amount_paid
+,total_paid_amt;
+
+--COMMAND 11
+create or replace table dn_updated_luitpold_positiveOOP as
+select *
+from dn_updated_luitpold_OOP
+where Copayment_Amount > 0 or Deductible_Amount > 0 or Coinsurance_Amount > 0
+or (Coinsurance_Amount =null and Copayment_Amount =null and Deductible_Amount =null)
+or (Coinsurance_Amount = 0 and Copayment_Amount = 0 and Deductible_Amount = 0);
+
+select * from  dn_updated_luitpold_withallOOP;
+
+--COMMAND 12
+create or replace table dn_updated_luitpold_withallOOP as 
+select *
+,ifnull(Deductible_Amount, 0) + ifnull(Coinsurance_Amount, 0) + ifnull(Copayment_Amount, 0) as OOP_Amount
+,count(
+  case when (Count_Deductible_Adjustment > 0  or Count_Coinsurance_Adjustment > 0 or Count_Copayment_Adjustment > 0)
+       then 1
+       else null end
+      ) as Count_AnyOOP_Adjustment
+from dn_updated_luitpold_positiveOOP
+group by 
+payer_claim_control_number
+,service_from_date
+,year_date
+,month_date
+,payer_id
+,type_of_coverage
+,type_of_bill
+,billing_pr_npi
+,rendering_pr_npi
+,adjudicated_procedure_cd
+,claim_status
+,line_paid_amount
+,line_charge_amount
+,date_paid
+,claim_received_by_payer_date
+,patient_responsibility_amount
+,patient_amount_paid
+,total_paid_amt
+,Deductible_Amount
+,Count_Deductible_Adjustment
+,Coinsurance_Amount
+,Count_Coinsurance_Adjustment
+,Copayment_Amount
+,Count_Copayment_Adjustment;
+
+
+---HAD TO STOP HERE TO MAKE 340B_Combined_NPI(all NPI's for 340B hospitals)
+/*create table threefortyB_Combined_NPI(NPI VARCHAR (17726));*/
+
+--COMMAND 13
+create or replace table threefortyB_luitpold_claims as 
+select 
+N1.NPI as NPI_match_on_billing_npi,
+N2.NPI as NPI_match_on_rendering,
+L.*
+from dn_updated_luitpold_withallOOP L
+left join threefortyB_combined_NPI N1
+on L.billing_pr_npi = N1.NPI
+left join threefortyB_combined_NPI N2
+on L.rendering_pr_npi = N2.NPI;
+
+
+select * from threefortyB_luitpold_claims;
+
+--COMMAND 14
+--this is the final output table to share with Luitpold
+create or replace table DN_Luitpold_threefortyB as
+select 
+case when adjudicated_procedure_cd = 'J1439' then 'Injectafer'
+when adjudicated_procedure_cd = 'J1750' then 'INFed_and_Generics'
+when adjudicated_procedure_cd = 'J1756' then 'Venofer'
+when adjudicated_procedure_cd = 'J2916' then 'Ferrlecit'
+when adjudicated_procedure_cd = 'Q0138' then 'Feraheme(Q0138)'
+when adjudicated_procedure_cd = 'Q0139' then 'Feraheme(Q0139)'
+end as 
+Drug_name,
+substr(service_from_date,1,7) as year_month,
+count(*) as Total_Claims,
+sum(case when Deductible_Amount > 0 then 1 end) as Count_of_Claims_with_Deductible, 
+sum(case when Coinsurance_Amount > 0 then 1 end) as Count_of_Claims_with_Coinsurance, 
+sum(case when Copayment_Amount > 0 then 1 end) as Count_of_Claims_with_Copayment, 
+sum(case when Deductible_Amount > 0 then Deductible_Amount end)/ sum(case when Deductible_Amount > 0 then 1 end) as Average_Deductible_Amount,  
+sum(case when Coinsurance_Amount > 0 then Coinsurance_Amount end)/ sum(case when Coinsurance_Amount > 0 then 1 end) as Average_Coinsurance_Amount,  
+sum(case when Copayment_Amount > 0 then Copayment_Amount end)/ sum(case when Copayment_Amount > 0 then 1 end) as Average_Copayment_Amount, 
+sum(case when OOP_Amount > 0 then OOP_Amount end)/ sum(case when OOP_Amount > 0 then 1 end) as Average_OOP_Amount,
+
+sum(case when Deductible_Amount > 0 then 1 end)/Count(*) as Percent_claims_with_deductible,
+sum(case when Coinsurance_Amount > 0 then 1 end)/Count(*) as Percent_claims_with_coinsurance,
+sum(case when Copayment_Amount > 0 then 1 end)/Count(*) as Percent_claims_with_copayment,
+sum(case when OOP_Amount > 0 then 1 end)/Count(*) as Percent_claims_with_OOP
+from threefortyB_luitpold_claims
+where (NPI_match_on_billing_npi is not null or NPI_match_on_rendering is not null)
+group by case when adjudicated_procedure_cd = 'J1439' then 'Injectafer'
+when adjudicated_procedure_cd = 'J1750' then 'INFed_and_Generics'
+when adjudicated_procedure_cd = 'J1756' then 'Venofer'
+when adjudicated_procedure_cd = 'J2916' then 'Ferrlecit'
+when adjudicated_procedure_cd = 'Q0138' then 'Feraheme(Q0138)'
+when adjudicated_procedure_cd = 'Q0139' then 'Feraheme(Q0139)'
+end, substr(service_from_date,1,7)
+order by case when adjudicated_procedure_cd = 'J1439' then 'Injectafer'
+when adjudicated_procedure_cd = 'J1750' then 'INFed_and_Generics'
+when adjudicated_procedure_cd = 'J1756' then 'Venofer'
+when adjudicated_procedure_cd = 'J2916' then 'Ferrlecit'
+when adjudicated_procedure_cd = 'Q0138' then 'Feraheme(Q0138)'
+when adjudicated_procedure_cd = 'Q0139' then 'Feraheme(Q0139)'
+end, substr(service_from_date,1,7) asc;
+
+--checking out the table above. looks like we have everything we need here
+select * from DN_Luitpold_threefortyB 
+order by year_month desc;
+
+
+select * from DN_Luitpold_threefortyB
+where drug_name = 'J1439';
+
+select * from DN_Luitpold_threefortyB
+where year_month > '201512' and year_month < '201708';
+
+select * from sandbox.threefortyB_Combined_NPI limit 100;
+
+--new tables from wing/joe
+select * from sandbox.DSI_non_retail_outlet_master;
+select * from sandbox.DSI_product_reference limit 100;
+select * from sandbox.DSI_product_reference where lower(prd_name) in ('venofer', 'injectafer', 'ferrlecit');
+select * from sandbox.DSI_relationship_type;
+select * from sandbox.DSI_relationship_fact;
+
+/*
+sandbox.DSI_non_retail_outlet_master is a list of all the outlets/facilities/accounts
+
+you need to filter this table of accounts by product : sandbox.DSI_product_reference
+
+sandbox.DSI_relationship_type and  sandbox.DSI_relationship_fact are child/parent relationship tables
+*/
+
+SELECT * FROM DSI_TERRITORIES;
