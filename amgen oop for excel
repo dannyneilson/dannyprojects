@@ -1,0 +1,1091 @@
+--for the excel only
+
+---DB: DN_Amgen_6.20_OOP_NPlate_by_claim_medicaregrouped
+--pulling out Nplate results and OOP values
+drop table if exists D_Amgen_EAll_Remit_ST2_counter_allmedicare_Nplate;
+create table D_Amgen_EAll_Remit_ST2_counter_allmedicare_Nplate as 
+select 
+payer_claim_control_number 
+,service_from_date
+,therapy
+,case when Copayment_Amount > 0 then Copayment_Amount else 0 end as Copay
+,case when Coinsurance_Amount > 0 then Coinsurance_Amount else 0 end as Coinsurance
+,case when Deductible_Amount > 0 then Deductible_Amount else 0 end as Deductible
+, Plan_Type 
+from DN_amgen_final_bandR_new_reformat_update
+where service_from_date >= '2016-01' and service_from_Date <= '2016-12'
+and therapy <> 'Unknown' and Data_Source <> 'Pharmacy';
+
+select distinct plan_type from DN_amgen_final_bandR_new_reformat_update;
+select * from sandbox.plan_type_determination;
+select count(*) from  D_Amgen_EAll_Remit_ST2_counter_allmedicare_Nplate limit 100;
+
+--creating a Total OOP calculation for medicare with deductible
+drop table if exists D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarewithdeductible;
+create table D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarewithdeductible as
+select *
+,(Copay+Coinsurance+Deductible) as OOP
+from D_Amgen_EAll_Remit_ST2_counter_allmedicare_Nplate;
+
+
+--creating a Total OOP calculation for medicare without deductible
+drop table if exists D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarenodeductible;
+create table D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarenodeductible as
+select *
+,(Copay+Coinsurance) as OOP
+from D_Amgen_EAll_Remit_ST2_counter_allmedicare_Nplate;
+
+
+--******CLAIM AVERAGE WITH DEDUCTIBLE
+select plan_type, sum(OOP), count(*), sum(OOP)/count(*) as medicareclaimaverage 
+from D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarewithdeductible 
+where OOP > 0 and therapy = 'Neulasta' and plan_type <> 'Null'
+group by plan_type;
+
+
+--assigning claims in different buckets for medicare with deductible
+drop table if exists DN_Amgen_OOP_062017_final_Nplate_medicaredeductible;
+create table DN_Amgen_OOP_062017_final_Nplate_medicaredeductible as
+select 
+payer_claim_control_number
+,service_from_date
+,plan_type
+,therapy
+--counts for patient bins
+      
+    ,case when OOP = 0 
+    then 1
+    else null
+   end as Count_Claims_0_OOP
+   
+    
+    ,case when OOP < 50 and OOP !=0 
+    then 1
+    else null
+   end as Count_Claims_0_to_50_OOP
+   
+   
+    ,case when OOP >= 50 and OOP < 100 
+    then 1
+    else null
+   end as Count_Claims_50_to_100_OOP
+   
+     
+    ,case when OOP >= 100 and OOP < 150 
+    then 1
+    else null
+   end as Count_Claims_100_to_150_OOP
+   
+   
+    ,case when OOP >= 150 and OOP < 200 
+    then 1
+    else null
+   end as Count_Claims_150_to_200_OOP
+   
+   
+    ,case when OOP >= 200 and OOP < 250 
+    then 1
+    else null
+   end as Count_Claims_200_to_250_OOP
+   
+    
+    ,case when OOP >= 250 and OOP < 300 
+    then 1
+    else null
+   end as Count_Claims_250_to_300_OOP
+   
+ 
+    ,case when OOP >= 300 
+    then 1
+    else null
+   end as Count_Claims_300_plus_OOP    
+   
+   ,case when OOP is not NULL 
+   then 1 
+   else null
+   end as Count_Total_Claims
+
+ from D_Amgen_EAll_Remit_ST2_counter_OOP_allmedicarewithdeductible;
+ 
+ 
+ --******THIS WAS USED TO CREATE THE CLAIM BINS (WITHDEDUCTIBLE)
+ select therapy, plan_type, sum(count_claims_0_oop) as zero, sum(count_claims_0_to_50_oop) as zerotofifty, sum(count_claims_50_to_100_oop) as fiftytoonehundred, 
+ sum(count_claims_100_to_150_oop) as onehundredtoonefifty, sum(count_claims_150_to_200_oop) as onehundredtotwohundred
+,sum(count_claims_200_to_250_oop) as twohundredtotwofifty, sum(count_claims_250_to_300_oop) as twofiftytothreehundred, sum(count_claims_300_plus_oop) as threehundredplus
+from DN_Amgen_OOP_062017_final_Nplate_medicaredeductible 
+where therapy = 'Neulasta'
+group by plan_type, therapy;
+
+-----------------------------------------------------------------------------------------------------------------------------------
+--summing up a patient's oop for the year
+
+
+---THE NEXT PART IS AT PATIENT LEVEL FOR BOTH MEDICARE AND COMMERCIAL
+---DB: DN_Amgen_6.20_NPlate_bypatient_coordination_of_benefits_2016
+
+--assigning type of coverage
+drop table if exists D_Amgen_EAll_Remit_ST1_case;
+create table D_Amgen_EAll_Remit_ST1_case as
+select 
+patient_ID,
+Copayment_Amount,
+Count_Copayment_Adjustment,
+Coinsurance_Amount,
+Count_Coinsurance_Adjustment,
+Deductible_Amount,
+Count_Deductible_Adjustment,
+Patient_OOP,
+Count_OOP_Adjustment,
+therapy,
+payer_claim_control_number,
+service_from_date,
+year_date,
+month_date,
+payer_id,
+plan_type,
+type_of_bill,
+billing_pr_npi,
+rendering_pr_npi,
+case when plan_type in ('Commercial') then 1 else 0 end as commercial_payercount,
+case when Plan_Type in ('Medicare A', 'Medicare B', 'Medicare D', 'Medicare Advantage') then 1 else 0 end as Medicare_payercount,
+case when plan_type in ('Medicare A') then 1 else 0 end as Medicare_A_payercount,
+case when plan_type in ('Medicare B') then 1 else 0 end as Medicare_B_payercount,
+case when plan_type in ('Medicare D') then 1 else 0 end as Medicare_D_payercount,
+case when plan_type in ('Medicare Advantage') then 1 else 0 end as Medicare_Advantage_payercount,
+case when plan_type in ('Medicaid') then 1 else 0 end as medicaid_payercount
+from DN_amgen_final_bandR_new_reformat_update
+where therapy = 'Neulasta'
+group by 
+patient_ID,
+Copayment_Amount,
+Count_Copayment_Adjustment,
+Coinsurance_Amount,
+Count_Coinsurance_Adjustment,
+Deductible_Amount,
+Count_Deductible_Adjustment,
+Patient_OOP,
+Count_OOP_Adjustment,
+therapy,
+payer_claim_control_number,
+service_from_date,
+year_date,
+month_date,
+payer_id,
+plan_type,
+type_of_bill,
+billing_pr_npi,
+rendering_pr_npi;
+
+select count(*) from DN_amgen_final_bandR_new_reformat_update;--12,191,749
+select count(*) from D_Amgen_EAll_Remit_ST1_case;--435,924
+select distinct plan_type from DN_amgen_final_bandR_new_reformat_update;
+
+--getting the OOP values
+drop table if exists D_Amgen_EAll_Remit_ST1_Nplate_change;
+create table D_Amgen_EAll_Remit_ST1_Nplate_change as
+select 
+patient_ID,
+Therapy,
+plan_type,
+billing_pr_npi,
+service_from_date,
+
+sum(Deductible_Amount) as sumdeductible,
+
+--commercial below
+sum(commercial_payercount) as countcommercial,
+
+min(case 
+  when commercial_payercount = 1
+  then deductible_amount
+  else NULL
+end) as commercial_payer_deductible,
+min(case 
+   when commercial_payercount = 1
+  then copayment_amount
+  else NULL
+end) as commercial_payer_copayment,
+min(case 
+   when commercial_payercount = 1
+  then coinsurance_amount
+  else NULL
+end) as commercial_payer_coinsurance,
+
+--medicare below
+sum(Medicare_payercount) as countmedicare,
+
+min(case 
+  when Medicare_payercount = 1
+  then deductible_amount
+  else NULL
+end) as medicare_payer_deductible,
+min(case 
+   when Medicare_payercount = 1
+  then copayment_amount
+  else NULL
+end) as medicare_payer_copayment,
+min(case 
+   when Medicare_payercount = 1
+  then coinsurance_amount
+  else NULL
+end) as medicare_payer_coinsurance,
+
+--medicaid below
+sum(medicaid_payercount) as countmedicaid,
+
+min(case 
+  when medicaid_payercount = 1
+  then deductible_amount
+  else NULL
+end) as medicaid_payer_deductible,
+min(case 
+   when medicaid_payercount = 1
+  then copayment_amount
+  else NULL
+end) as medicaid_payer_copayment,
+min(case 
+   when medicaid_payercount = 1
+  then coinsurance_amount
+  else NULL
+end) as medicaid_payer_coinsurance,
+
+sum(Medicare_A_payercount) as countmedicarea,
+sum(Medicare_B_payercount) as countmedicareb,
+sum(Medicare_D_payercount) as countmedicared,
+sum(Medicare_Advantage_payercount) as countmedicareadvantage
+
+from D_Amgen_EAll_Remit_ST1_case
+where service_from_date >= '2016-01' and service_from_Date <= '2016-12'
+and therapy <> 'Unknown'
+group by 
+patient_id,
+service_from_date,
+billing_pr_npi,
+therapy,
+plan_type;
+
+
+--******how many records do we see for identified commercial patients?
+select therapy, plan_type, count(*) from D_Amgen_EAll_Remit_ST1_Nplate_change
+where patient_id is not null and patient_id not like 'XXX -%' and countcommercial> 0 and therapy = 'Neulasta'
+group by therapy, plan_type;
+
+select count(*) from D_Amgen_EAll_Remit_ST1_Nplate_change limit 100;--1,466,596 RECORDS
+
+--******how many records do we see for identified medicare patients?
+select therapy, plan_type, count(*) from D_Amgen_EAll_Remit_ST1_Nplate_change
+where patient_id is not null and patient_id not like 'XXX -%' and countmedicaid > 0 and therapy = 'Neulasta'
+group by therapy, plan_type;
+*/
+select * from D_Amgen_EAll_Remit_ST1_Nplate_change limit 100;
+
+--counting whether we see commercial and medicare payers
+drop table if exists D_Amgen_EAll_Remit_ST1_Nplate_changed;
+create table D_Amgen_EAll_Remit_ST1_Nplate_changed as
+select
+patient_ID,
+Therapy,
+plan_type,
+billing_pr_npi,
+service_from_date,
+sumdeductible,
+
+countcommercial,
+commercial_payer_deductible,
+case when countcommercial > 0 and commercial_payer_copayment >= 0 then commercial_payer_copayment else 0 end as commercial_payer_copayment,
+case when countcommercial > 0 and commercial_payer_coinsurance >= 0 then commercial_payer_coinsurance else 0 end as commercial_payer_coinsurance,
+
+countmedicare,
+medicare_payer_deductible,
+case when countmedicare > 0 and medicare_payer_copayment >= 0 then medicare_payer_copayment else 0 end as medicare_payer_copayment,
+case when countmedicare > 0 and medicare_payer_coinsurance >= 0 then medicare_payer_coinsurance else 0 end as medicare_payer_coinsurance,
+
+countmedicaid,
+medicaid_payer_deductible,
+case when countmedicaid > 0 and medicaid_payer_copayment >= 0 then medicaid_payer_copayment else 0 end as medicaid_payer_copayment,
+case when countmedicaid > 0 and medicaid_payer_coinsurance >= 0 then medicaid_payer_coinsurance else 0 end as medicaid_payer_coinsurance,
+
+countmedicarea,
+countmedicareb,
+countmedicared,
+countmedicareadvantage
+
+from D_Amgen_EAll_Remit_ST1_Nplate_change;
+
+select * from D_Amgen_EAll_Remit_ST1_Nplate_changed limit 100;
+
+--coordinating the benefits
+drop table if exists D_Amgen_EAll_Remit_ST1_Nplate_changed_update;
+create table D_Amgen_EAll_Remit_ST1_Nplate_changed_update as 
+select 
+patient_ID,
+Therapy,
+plan_type,
+billing_pr_npi,
+service_from_date,
+sumdeductible,
+
+--minimum copayment
+case when 
+countcommercial >0 and countmedicare >0 and commercial_payer_copayment < medicare_payer_copayment 
+then commercial_payer_copayment 
+when 
+countcommercial >0 and countmedicare >0 and commercial_payer_copayment > medicare_payer_copayment 
+then medicare_payer_copayment 
+when 
+countcommercial >0 and countmedicare >0 and commercial_payer_copayment = medicare_payer_copayment 
+then medicare_payer_copayment
+
+when countcommercial > 0 and countmedicare = 0
+then commercial_payer_copayment
+when countcommercial = 0 and countmedicare > 0
+then medicare_payer_copayment
+--medicaid
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_copayment < medicare_payer_copayment 
+then medicaid_payer_copayment 
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_copayment > medicare_payer_copayment 
+then medicare_payer_copayment 
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_copayment = medicare_payer_copayment 
+then medicare_payer_copayment
+
+when countmedicaid > 0 and countmedicare = 0
+then medicaid_payer_copayment
+when countmedicaid = 0 and countmedicare > 0
+then medicare_payer_copayment
+
+else null
+end as mincopayment,
+
+--minimum coinsurance
+case when 
+countcommercial >0 and countmedicare >0 and commercial_payer_coinsurance < medicare_payer_coinsurance 
+then commercial_payer_coinsurance
+when 
+countcommercial >0 and countmedicare >0 and commercial_payer_coinsurance > medicare_payer_coinsurance 
+then medicare_payer_coinsurance
+when 
+countcommercial >0 and countmedicare >0 and commercial_payer_coinsurance = medicare_payer_coinsurance 
+then medicare_payer_coinsurance
+
+when countcommercial >0 and countmedicare =0
+then commercial_payer_coinsurance
+when countcommercial =0 and countmedicare >0
+then medicare_payer_coinsurance
+--medicaid
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_coinsurance < medicare_payer_coinsurance 
+then medicaid_payer_coinsurance
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_coinsurance > medicare_payer_coinsurance 
+then medicare_payer_coinsurance
+when 
+countmedicaid >0 and countmedicare >0 and medicaid_payer_coinsurance = medicare_payer_coinsurance 
+then medicare_payer_coinsurance
+
+when countmedicaid >0 and countmedicare =0
+then medicaid_payer_coinsurance
+when countmedicaid =0 and countmedicare >0
+then medicare_payer_coinsurance
+else null
+end as mincoinsurance,
+
+countcommercial,
+commercial_payer_deductible,
+commercial_payer_copayment,
+commercial_payer_coinsurance,
+countmedicare,
+medicare_payer_deductible,
+medicare_payer_copayment,
+medicare_payer_coinsurance,
+
+countmedicaid,
+medicaid_payer_deductible,
+medicaid_payer_copayment,
+medicaid_payer_coinsurance,
+countmedicarea,
+countmedicareb,
+countmedicared,
+countmedicareadvantage
+from D_Amgen_EAll_Remit_ST1_Nplate_changed;
+
+
+--assigning the OOP amounts to be non null
+drop table if exists D_Amgen_EAll_Remit_ST1_Nplate_OOP;
+create table D_Amgen_EAll_Remit_ST1_Nplate_OOP as
+select 
+patient_ID,
+Therapy, 
+plan_type,
+billing_pr_npi,
+service_from_date,
+
+case when mincopayment > 0 then mincopayment else 0 end as mincopayment,
+case when sumdeductible >0 then sumdeductible else 0 end as sumdeductible,
+case when mincoinsurance >0 then mincoinsurance else 0 end as mincoinsurance,
+
+countcommercial,
+commercial_payer_deductible,
+commercial_payer_copayment,
+commercial_payer_coinsurance,
+
+countmedicare,
+medicare_payer_deductible,
+medicare_payer_copayment,
+medicare_payer_coinsurance,
+
+countmedicaid,
+medicaid_payer_deductible,
+medicaid_payer_copayment,
+medicaid_payer_coinsurance,
+countmedicarea,
+countmedicareb,
+countmedicared,
+countmedicareadvantage
+
+from D_Amgen_EAll_Remit_ST1_Nplate_changed_update;
+
+--assigning a Total OOP
+drop table if exists D_Amgen_EAll_Remit_ST1_Nplate_allOOP;
+create table D_Amgen_EAll_Remit_ST1_Nplate_allOOP as
+select 
+patient_ID,
+Therapy,
+plan_type,
+billing_pr_npi,
+service_from_date,
+mincopayment,
+sumdeductible,
+mincoinsurance,
+(mincopayment+sumdeductible+mincoinsurance) as Total_OOP,
+
+countcommercial,
+commercial_payer_deductible,
+commercial_payer_copayment,
+commercial_payer_coinsurance,
+
+countmedicare,
+medicare_payer_deductible,
+medicare_payer_copayment,
+medicare_payer_coinsurance,
+
+countmedicaid,
+medicaid_payer_deductible,
+medicaid_payer_copayment,
+medicaid_payer_coinsurance,
+countmedicarea,
+countmedicareb,
+countmedicared,
+countmedicareadvantage
+
+from D_Amgen_EAll_Remit_ST1_Nplate_OOP
+group by 
+patient_ID,
+Therapy,
+plan_type,
+billing_pr_npi,
+service_from_date,
+mincopayment,
+sumdeductible,
+mincoinsurance,
+
+countcommercial,
+commercial_payer_deductible,
+commercial_payer_copayment,
+commercial_payer_coinsurance,
+
+countmedicare,
+medicare_payer_deductible,
+medicare_payer_copayment,
+medicare_payer_coinsurance,
+
+countmedicaid,
+medicaid_payer_deductible,
+medicaid_payer_copayment,
+medicaid_payer_coinsurance,
+countmedicarea,
+countmedicareb,
+countmedicared,
+countmedicareadvantage;
+
+describe table D_Amgen_EAll_Remit_ST1_Nplate_OOP;
+
+--limiting to only valid patients
+drop table if exists Nplate2016_patients;
+create table Nplate2016_patients as
+select 
+therapy, patient_ID,
+sum(countcommercial) as commercial,
+sum(countmedicare) as medicare,
+sum(countmedicaid) as medicaid,
+sum(countmedicarea) as medicarea,
+sum(countmedicareb) as medicareb,
+sum(countmedicared) as medicared,
+sum(countmedicareadvantage) as medicareadvantage
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP
+where patient_id not like 'XXX -%' and patient_id is not null
+group by
+therapy, patient_ID;
+
+
+--getting the commercial patients
+drop table if exists DN_Nplate_commercial_2016patients;
+create table DN_Nplate_commercial_2016patients as 
+select therapy, patient_id
+from Nplate2016_patients 
+where commercial > 0 ;
+
+--we are getting a distinct list of patients from above
+select count(distinct patient_id) from DN_Nplate_commercial_2016patients;
+
+--getting the medicare patients
+drop table if exists DN_Nplate_medicare_2016patients;
+create table DN_Nplate_medicare_2016patients as
+select therapy, patient_id
+from Nplate2016_patients
+where medicare > 0;
+
+--getting the medicaid patients
+drop table if exists DN_Nplate_medicaid_2016patients;
+create table DN_Nplate_medicaid_2016patients as
+select therapy, patient_id
+from Nplate2016_patients
+where medicaid > 0;
+
+--getting all records for valid commercial patients
+drop table if exists DN_Nplate_comm_records;
+create table DN_Nplate_comm_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_commercial_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+
+--getting all records for valid medicare patients
+drop table if exists DN_Nplate_medicare_records;
+create table DN_Nplate_medicare_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_medicare_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+--getting all records for valid medicaid patients
+drop table if exists DN_Nplate_medicaid_records;
+create table DN_Nplate_medicaid_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_medicaid_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+
+--getting the medicaid patients
+drop table if exists DN_Nplate_medicaid_2016patients;
+create table DN_Nplate_medicaid_2016patients as
+select therapy, patient_id
+from sandbox.Nplate2016_patients
+where medicaid > 0;
+
+--getting all records for valid commercial patients
+drop table if exists DN_Nplate_comm_records;
+create table DN_Nplate_comm_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_commercial_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+
+--getting all records for valid medicaid patients
+drop table if exists DN_Nplate_medicaid_records;
+create table DN_Nplate_medicaid_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_medicaid_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+describe table DN_Nplate_medicaid_records;
+
+
+describe table D_Amgen_EAll_Remit_ST1_Nplate_allOOP;
+
+--getting Total OOP's for commercial patients
+drop table if exists DN_062017_Amgen_OOP_Nplate_commercial;
+create table DN_062017_Amgen_OOP_Nplate_commercial as
+select
+patient_id
+,therapy
+,sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)as total_sumdeductible_v2
+,sum(
+    case 
+    when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)as total_mincopayment_v2
+  ,sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end)as total_mincoinsurance_v2
+,
+sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)
++sum(
+    case
+  when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)
+  +sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end) 
+as total_OOP_amount2
+from DN_Nplate_comm_records
+group by
+patient_id
+,therapy;
+
+select * from DN_Nplate_comm_records limit 100;
+select * from DN_062017_Amgen_OOP_Nplate_commercial limit 100;
+
+
+--******GETTING TOTAL OOP VALUES FOR ALL COMMERCIAL PATIENTS IN YEAR FOR NPLATE- $223,078.21
+select therapy, sum(total_OOP_amount2)
+from DN_062017_Amgen_OOP_Nplate_commercial
+where therapy = 'Neulasta'
+group by therapy;
+
+--getting results for patients who have OOPs
+select therapy, patient_id, total_oop_amount2
+from DN_062017_Amgen_OOP_Nplate_commercial
+where total_OOP_amount2 > 0
+order by total_oop_amount2 desc;
+
+
+--******GETTING TOTAL OOP VALUES FOR ALL MEDICARE PATIENTS IN YEAR FOR NPLATE- $480,110.63
+select therapy, sum(total_OOP_amount2)
+from DN_062017_Amgen_OOP_Nplate_medicaid
+group by therapy;
+
+
+--unioning columns together for OOP
+drop table if exists DN_Amgen_unioned_OOP_Nplate_commercial_062017;
+create table DN_Amgen_unioned_OOP_Nplate_commercial_062017 as 
+select patient_id, therapy, total_sumdeductible_v2 as OOP_Value, 'total_deductible_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_commercial
+union 
+select patient_id, therapy, total_mincoinsurance_v2 as OOP_Value, 'total_coinsurance_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_commercial
+union
+select patient_id, therapy, total_mincopayment_v2 as OOP_Value, 'total_copayment_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_commercial
+union 
+select patient_id, therapy, total_oop_amount2 as OOP_Value, 'total_oop_amount2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_commercial;
+
+
+--assigning patients to bin ranges
+drop table if exists DN_Amgen_OOP_062017_final_Nplate_commercial;
+create table DN_Amgen_OOP_062017_final_Nplate_commercial as 
+select 
+therapy 
+--counts for patient bins
+       
+      ,count(distinct
+    case when OOP_Value = 0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_OOP
+   
+    ,count(distinct
+    case when OOP_Value < 50 and OOP_Value !=0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_to_50_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 50 and OOP_Value < 100 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_50_to_100_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 100 and OOP_Value < 150 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_100_to_150_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 150 and OOP_Value < 200 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_150_to_200_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 200 and OOP_Value < 250 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_200_to_250_OOP
+   
+    ,count(distinct
+    case when OOP_Value >= 250 and OOP_Value < 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_250_to_300_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_300_plus_OOP  
+   
+       
+,count(distinct patient_id) as Total_Count_of_Patients
+
+ from DN_Amgen_unioned_OOP_Nplate_commercial_062017
+ group by 
+therapy;
+
+
+--*****COMMERCIAL RESULTS FOR PATIENTS
+select * from DN_Amgen_OOP_062017_final_Nplate_commercial
+where therapy = 'Neulasta';
+
+-----------------------------------------------------------------------
+--getting the medicare a patients
+drop table if exists DN_Nplate_medicare_2016patients;
+create table DN_Nplate_medicare_2016patients as
+select therapy, patient_id
+from Nplate2016_patients
+where medicared > 0;
+
+select * from  DN_Nplate_medicare_2016patients;
+--getting all records for valid medicare patients
+drop table if exists DN_Nplate_medicare_records;
+create table DN_Nplate_medicare_records as
+select OOP.*
+from D_Amgen_EAll_Remit_ST1_Nplate_allOOP OOP
+inner join DN_Nplate_medicare_2016patients pat
+on OOP.patient_id = pat.patient_id;
+
+--getting Total OOP's for medicare patients
+drop table if exists DN_062017_Amgen_OOP_Nplate_medicare;
+create table DN_062017_Amgen_OOP_Nplate_medicare as
+select
+patient_id
+,therapy
+,plan_type
+,sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)as total_sumdeductible_v2
+,sum(
+    case 
+    when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)as total_mincopayment_v2
+  ,sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end)as total_mincoinsurance_v2
+,
+sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)
++sum(
+    case
+  when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)
+  +sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end) 
+as total_OOP_amount2
+from DN_Nplate_medicare_records
+group by
+patient_id
+,therapy
+,plan_type;
+
+
+--unioning columns together for OOP
+drop table if exists DN_Amgen_unioned_OOP_Nplate_medicare_062017;
+create table DN_Amgen_unioned_OOP_Nplate_medicare_062017 as 
+select patient_id, therapy, plan_type, total_sumdeductible_v2 as OOP_Value, 'total_deductible_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicare
+union 
+select patient_id, therapy, plan_type, total_mincoinsurance_v2 as OOP_Value, 'total_coinsurance_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicare
+union
+select patient_id, therapy, plan_type, total_mincopayment_v2 as OOP_Value, 'total_copayment_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicare
+union 
+select patient_id, therapy, plan_type, total_oop_amount2 as OOP_Value, 'total_oop_amount2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicare;
+
+--assigning patients to bin ranges
+drop table if exists DN_Amgen_OOP_062017_final_Nplate_medicare;
+create table DN_Amgen_OOP_062017_final_Nplate_medicare as 
+select 
+therapy
+--counts for patient bins
+       
+       ,count(distinct
+    case when OOP_Value = 0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_OOP
+   
+    ,count(distinct
+    case when OOP_Value < 50 and OOP_Value !=0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_to_50_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 50 and OOP_Value < 100 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_50_to_100_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 100 and OOP_Value < 150 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_100_to_150_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 150 and OOP_Value < 200 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_150_to_200_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 200 and OOP_Value < 250 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_200_to_250_OOP
+   
+    ,count(distinct
+    case when OOP_Value >= 250 and OOP_Value < 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_250_to_300_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_300_plus_OOP  
+   
+       
+,count(distinct patient_id) as Total_Count_of_Patients
+ from DN_Amgen_unioned_OOP_Nplate_medicare_062017
+ group by 
+therapy;
+
+
+--******GETTING MEDICARE PATIENT RESULTS
+select * 
+from DN_Amgen_OOP_062017_final_Nplate_medicare
+where therapy = 'Neulasta';
+
+--******GETTING TOTAL OOP VALUES FOR ALL MEDICARE PATIENTS IN YEAR FOR NPLATE- $480,110.63
+select therapy, sum(total_OOP_amount2)
+from DN_062017_Amgen_OOP_Nplate_medicare
+group by therapy;
+
+
+select * from rwd.THIRD_PARTY_CMSNPI limit 100;
+describe table rwd.THIRD_PARTY_CMSNPI;
+select * from srn_cmsnpi_latest limit 100;
+select distinct(organization_type) from sandbox.claims_submits_facility_master limit 100;
+
+
+
+-------------------------------------------------------------------------------------------
+--getting Total OOP's for medicaid patients
+drop table if exists DN_062017_Amgen_OOP_Nplate_medicaid;
+create table DN_062017_Amgen_OOP_Nplate_medicaid as
+select
+patient_id
+,therapy
+,sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)as total_sumdeductible_v2
+,sum(
+    case 
+    when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)as total_mincopayment_v2
+  ,sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end)as total_mincoinsurance_v2
+,
+sum(
+    case 
+    when sumdeductible = NULL
+    then 0
+    else sumdeductible
+  end)
++sum(
+    case
+  when mincopayment = NULL
+    then 0
+    else mincopayment
+  end)
+  +sum(
+    case 
+    when mincoinsurance = NULL
+    then 0
+    else mincoinsurance
+    end) 
+as total_OOP_amount2
+from DN_Nplate_medicaid_records
+group by
+patient_id
+,therapy;
+
+
+
+--******GETTING TOTAL OOP VALUES FOR ALL medicaid PATIENTS IN YEAR FOR NPLATE- $223,078.21
+select therapy, sum(total_OOP_amount2)
+from DN_062017_Amgen_OOP_Nplate_medicaid
+where therapy = 'Neulasta'
+group by therapy;
+
+--getting results for patients who have OOPs
+select therapy, patient_id, total_oop_amount2
+from DN_062017_Amgen_OOP_Nplate_medicaid
+where total_OOP_amount2 > 0
+order by total_oop_amount2 desc;
+
+--getting total OOP for patients who have OOPs
+select therapy, sum(total_oop_amount2)
+from DN_062017_Amgen_OOP_Nplate_medicaid
+where total_OOP_amount2 > 0
+group by therapy;
+
+--******GETTING TOTAL OOP VALUES FOR ALL MEDICARE PATIENTS IN YEAR FOR NPLATE- $480,110.63
+select therapy, sum(total_OOP_amount2)
+from DN_062017_Amgen_OOP_Nplate_medicaid
+group by therapy;
+
+
+--unioning columns together for OOP
+drop table if exists DN_Amgen_unioned_OOP_Nplate_medicaid_062017;
+create table DN_Amgen_unioned_OOP_Nplate_medicaid_062017 as 
+select patient_id, therapy, total_sumdeductible_v2 as OOP_Value, 'total_deductible_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicaid
+union 
+select patient_id, therapy, total_mincoinsurance_v2 as OOP_Value, 'total_coinsurance_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicaid
+union
+select patient_id, therapy, total_mincopayment_v2 as OOP_Value, 'total_copayment_amount_v2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicaid
+union 
+select patient_id, therapy, total_oop_amount2 as OOP_Value, 'total_oop_amount2' as OOP_Type
+from DN_062017_Amgen_OOP_Nplate_medicaid;
+
+
+--assigning patients to bin ranges
+drop table if exists DN_Amgen_OOP_062017_final_Nplate_medicaid;
+create table DN_Amgen_OOP_062017_final_Nplate_medicaid as 
+select 
+therapy 
+--counts for patient bins
+       
+      ,count(distinct
+    case when OOP_Value = 0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_OOP
+   
+    ,count(distinct
+    case when OOP_Value < 50 and OOP_Value !=0 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_0_to_50_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 50 and OOP_Value < 100 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_50_to_100_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 100 and OOP_Value < 150 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_100_to_150_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 150 and OOP_Value < 200 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_150_to_200_OOP
+   
+   ,count(distinct
+    case when OOP_Value >= 200 and OOP_Value < 250 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_200_to_250_OOP
+   
+    ,count(distinct
+    case when OOP_Value >= 250 and OOP_Value < 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_250_to_300_OOP
+   
+     ,count(distinct
+    case when OOP_Value >= 300 and OOP_Type = 'total_oop_amount2'
+    then patient_id
+    else null
+   end) as Count_Patients_300_plus_OOP  
+   
+       
+,count(distinct patient_id) as Total_Count_of_Patients
+
+ from DN_Amgen_unioned_OOP_Nplate_medicaid_062017
+ group by 
+therapy;
+
+
+--
+
+--******GETTING MEDICAID PATIENT RESULTS
+select * 
+from DN_Amgen_OOP_062017_final_Nplate_medicaid
+where therapy = 'Neulasta';
